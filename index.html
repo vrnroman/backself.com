@@ -15,6 +15,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#0d0a06">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<noscript><style>footer .clock { display: none; }</style></noscript>
 <script id="bs-core">
 /* BackSelf core: pure logic, no DOM. Mirrored by landing/test/core.test.mjs.
    The page keeps the owner's hours. He lives in Asia/Singapore: UTC+8, no DST,
@@ -24,14 +25,17 @@ var BS = (function () {
   var SGT_OFFSET_MIN = 8 * 60;
   var AWAKE_START_H = 8;
 
+  /* sgtNow returns a Date whose UTC fields read Singapore wall-clock.
+     getTime() is UTC epoch ms, so a fixed shift is exact for any visitor,
+     including ones whose own zone is mid-DST-transition. Format the result
+     with fmtUTC / fmtUTCS (never the local getters). */
   function sgtNow(now) {
     var d = now || new Date();
-    return new Date(d.getTime() + (d.getTimezoneOffset() + SGT_OFFSET_MIN) * 60000);
+    return new Date(d.getTime() + SGT_OFFSET_MIN * 60000);
   }
 
   function stateAt(now) {
-    var h = sgtNow(now).getHours();
-    return h < AWAKE_START_H ? 'night' : 'day';
+    return sgtNow(now).getUTCHours() < AWAKE_START_H ? 'night' : 'day';
   }
 
   function hashOverride(hash) {
@@ -42,16 +46,20 @@ var BS = (function () {
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
 
+  /* SGT-shifted dates (from sgtNow): format via UTC getters. */
+  function fmtUTC(d) { return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()); }
+  function fmtUTCS(d) { return fmtUTC(d) + ':' + pad(d.getUTCSeconds()); }
+  /* Visitor-local dates (plain new Date()): format via local getters. */
   function fmtHM(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
-  function fmtHMS(d) { return fmtHM(d) + ':' + pad(d.getSeconds()); }
 
   /* Mirror lines: each exists only while its signal is true. The page never
-     explains how it knows. facts: { sgt: Date, visitor: Date, visitorOffsetMin,
-     visits, batteryPct (null when the API is absent) }. */
+     explains how it knows. facts: { sgt: Date (from sgtNow), visitor: Date
+     (local), visitorOffsetMin, visits, batteryPct (null when the API is
+     absent) }. */
   function mirrorLines(facts) {
     var lines = [];
     if (facts.visitorOffsetMin !== SGT_OFFSET_MIN) {
-      lines.push('It is ' + fmtHM(facts.sgt) + ' here, and ' + fmtHM(facts.visitor) +
+      lines.push('It is ' + fmtUTC(facts.sgt) + ' here, and ' + fmtHM(facts.visitor) +
         ' where you are. I keep his hours, not yours.');
     }
     if (facts.visits >= 2) {
@@ -70,7 +78,8 @@ var BS = (function () {
     stateAt: stateAt,
     hashOverride: hashOverride,
     fmtHM: fmtHM,
-    fmtHMS: fmtHMS,
+    fmtUTC: fmtUTC,
+    fmtUTCS: fmtUTCS,
     mirrorLines: mirrorLines
   };
 })();
@@ -88,8 +97,8 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = BS; }
   html.day {
     --bg: #0a0a0b;
     --ink: #8f8f98;
-    --ink-dim: #6e6e77;
-    --ink-faint: #55555e;
+    --ink-dim: #7a7a83;
+    --ink-faint: #64646d;
     --accent: #9a9aa5;
     --glow: rgba(140, 140, 170, .045);
   }
@@ -235,11 +244,11 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = BS; }
 <body>
 <main aria-live="polite">
   <div class="day-only">
-    <p class="line hero">He is awake. I only work while he sleeps.</p>
+    <h1 class="line hero">He is awake. I only work while he sleeps.</h1>
     <p class="line quiet">Come back when he is asleep. There is more of me then.</p>
   </div>
   <div class="night-only">
-    <p class="line hero">He is asleep. This is when I work.</p>
+    <h1 class="line hero">He is asleep. This is when I work.</h1>
     <div id="mirror" style="display:contents"></div>
     <p class="line quiet thesis">Your self, backed up and always at your back.</p>
     <p class="line quiet"><a href="mailto:hello@backself.com">Leave your address.</a> I read everything at night.</p>
@@ -261,7 +270,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = BS; }
      page is open (his midnight), the page turns over with him. */
   var clockEl = doc.getElementById('clock');
   function tick() {
-    clockEl.textContent = BS.fmtHMS(BS.sgtNow(new Date()));
+    clockEl.textContent = BS.fmtUTCS(BS.sgtNow(new Date()));
     if (!BS.hashOverride(location.hash) && BS.stateAt(new Date()) !== state) {
       location.reload();
     }
@@ -269,7 +278,22 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = BS; }
   tick();
   setInterval(tick, 1000);
 
-  /* The reveal: one thought at a time. */
+  /* The reveal: one thought at a time, on one absolute schedule from t0.
+     Re-scans safely: lines already revealed are skipped, so late arrivals
+     (the battery line) slot into their DOM position. */
+  var t0 = null;
+  function revealAll() {
+    if (t0 === null) t0 = performance.now();
+    var els = Array.prototype.slice.call(
+      doc.querySelectorAll('html.night .night-only > .line, html.night #mirror > .line, html.day .day-only .line')
+    );
+    els.forEach(function (el) {
+      if (el.classList.contains('on')) return;
+      var delay = reduced ? 0 : Math.max(0, t0 + 350 + els.indexOf(el) * 1250 - performance.now());
+      setTimeout(function () { el.classList.add('on'); }, delay);
+    });
+  }
+
   var lines = [];
   if (state === 'night') {
     var mirror = doc.getElementById('mirror');
@@ -286,35 +310,28 @@ if (typeof module !== 'undefined' && module.exports) { module.exports = BS; }
       localStorage.setItem('bs_v', String(facts.visits));
     } catch (e) { /* storage blocked: the line simply does not exist */ }
 
-    function paint(lines) {
-      lines.forEach(function (text) {
+    function paint(texts) {
+      texts.forEach(function (text) {
         var p = doc.createElement('p');
         p.className = 'line quiet';
         p.textContent = text;
         mirror.appendChild(p);
       });
-      reveal(doc.querySelectorAll('html.night .night-only > .line, html.night #mirror > .line'));
+      revealAll();
     }
 
-    var tzAndVisit = BS.mirrorLines(facts);
+    /* Timezone and visit lines paint at once. The battery line joins when
+       (and if) the promise settles, so a hung API can never blank the page. */
+    var trueNow = BS.mirrorLines(facts);
+    paint(trueNow);
     if (navigator.getBattery) {
       navigator.getBattery().then(function (b) {
         facts.batteryPct = b.level * 100;
-        paint(BS.mirrorLines(facts));
-      }).catch(function () { paint(tzAndVisit); });
-    } else {
-      paint(tzAndVisit);
+        paint(BS.mirrorLines(facts).slice(trueNow.length));
+      }).catch(function () { /* no battery line: silence is the design */ });
     }
   } else {
-    reveal(doc.querySelectorAll('html.day .day-only .line'));
-  }
-
-  function reveal(nodeList) {
-    var els = Array.prototype.slice.call(nodeList);
-    els.forEach(function (el, i) {
-      var delay = reduced ? 0 : 350 + i * 1250;
-      setTimeout(function () { el.classList.add('on'); }, delay);
-    });
+    revealAll();
   }
 
   /* The second cursor: it traces where you have been, a beat late, and it
